@@ -1,6 +1,76 @@
-<#
+function Log-Object {
+    <#
 .SYNOPSIS
-        Syncronises the content of a given folder to another folder
+    Create object with provided arguments
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$File,
+        [Parameter(Mandatory = $true)][string]$Operation,
+        [Parameter(Mandatory = $true)][string]$FromFolder,
+        [Parameter(Mandatory = $true)][string]$ToFolder
+    )
+
+    $log = [pscustomobject]@{Time = $(Get-Date); File = $File; Operation = $Operation; FromFolder = $SourceFolder; ToFolder = $BackupFolder}
+    return $log
+
+}
+function Verify-Content {
+    <#
+.SYNOPSIS
+    Verify the content of both folders once the sync is done
+#>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceFolder,
+        [Parameter(Mandatory = $true)][string]$BackupFolder,
+        [Parameter(Mandatory = $true)][string]$LogFolder
+    )
+                    
+    $source_list = Get-ChildItem -Path $SourceFolder
+    $LogPath = $LogFolder + "\" + "activities.log"
+
+
+    $result = foreach ($item in $source_list) {
+
+        $TestPath = $BackupFolder + "\" + $item.Name
+        if ((Test-Path -Path $item.FullName) -and (Test-Path -Path $TestPath)){
+            if ((Get-ChildItem -Path $item.FullName).LastWriteTime -eq (Get-ChildItem -Path $TestPath).LastWriteTime){
+                continue
+                Write-Output $TestPath
+            }else{
+                $output = "$item present, but last write time doesn't match"
+                Write-Output $output 
+                $output | Out-File -Append -FilePath $LogPath | Wait-Process
+            }
+                continue
+            }else{
+            $output = "$item not found in the backup folder"
+            Write-Output $output
+            $output | Out-File -Append -FilePath $LogPath | Wait-Process
+        }
+    }
+
+    if ($result){                        
+        $result | Out-File -Append -FilePath $LogPath | Wait-Process
+
+    }else{
+        $output = "`nBackup content successfully verified at " + "$(Get-Date)`n"
+        Write-Host $output -ForegroundColor Green
+        $output | Out-File -Append -FilePath $LogPath | Wait-Process
+    }
+
+    foreach ($item in (Get-ChildItem -Path $BackupFolder).Name){
+        if (!($source_list.Name.Contains($item))){
+            Write-Warning "$item not found in source folder!"
+        }
+    }                    
+}
+
+function Sync-Folder {
+    <#
+.SYNOPSIS
+        Syncronizes the content of a given folder to another folder
 
 .DESCRIPTION
         This function syncronyzes the content of a given folder to another folder. It has five paramters, three of which are mandatory, for the
@@ -29,12 +99,9 @@
 .EXAMPLE
 
     Example 1: Sync-Folder -SourceFolder "C:\source" -BackupFolder "C:\backup" -LogFolder "C:\Logs"
-
-    Example 2: Sync-Folder -SourceFolder "C:\source" -BackupFolder "C:\backup" -LogFolder "C:\Logs" -Interval 230 -EndTime "15:44"
+    Example 2: Sync-Folder -SourceFolder "C:\source" -BackupFolder "C:\backup" -LogFolder "C:\Logs" -Interval 23 -EndTime "15:44"
+    Example 3: Sync-Folder -SourceFolder "C:\source" -BackupFolder "C:\backup" -LogFolder "C:\Logs" -Interval 23 -EndTime "15:44" -Verify -OutJSON
 #>
-
-
-function Sync-Folder {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)][string]$SourceFolder,
@@ -42,116 +109,91 @@ function Sync-Folder {
         [Parameter(Mandatory=$true)][string]$LogFolder,
         [Parameter(Mandatory=$false)][int]$Interval = 10,
         [Parameter(Mandatory=$false)][string]$EndTime,
-        [switch]$Verify
+        [switch]$Verify,
+        [switch]$OutJSON
     )
 
-    # Check if the paths exist and indeed point to a folder
+    $LogPath = "$LogFolder" + "\" + "activities.log"
+    $LogObjects = @()
+
+    # Check if the paths exist and indeed each points to a folder. If path are correct, continue.
     $paths = $SourceFolder, $BackupFolder, $LogFolder
     foreach ($item in $paths) {
         if ( !(Test-Path -Path $item) -or !(Test-Path -Path $item -PathType Container) ){
             Write-Output "Folder $item doesn't exsist or provied path is not a folder"
             break
+        
         }else {
-            
-            $LogPath = "$LogFolder" + "\" + "activities.log"
-                        
+            # This loop conatins the main logic. It works with a list, created from the content of the given source folder. Once all files and
+            # their last write time have been compared, the loop repeats when the given time is up.
+            $index = 0
             do {
-                $source_list = Get-ChildItem -Path $SourceFolder
-                $date = Get-Date
-
-                $output = "###   $date" +  " ###  New log started at $LogPath  ###" +
-                "`n###--------------------------------------------------------------------------------------------------------###`n" 
-
+                
+                $output = "###  Synchronization started at " + "$(Get-Date)  ###"
                 Write-Output $output
                 $output | Out-File -Append -FilePath $LogPath | Wait-Process 
-
-                # Check if each file in the source folder exists in the backup folder already. Using "parallel" switch for faster processing.
-                # ForEach-Object -Parallel runs in a separate runspace, so it doesn't see the variables in the body
-                $source_list | ForEach-Object -Parallel {
-                    
-                    $date = Get-Date
-                    $backup = $using:BackupFolder
-                    $source = $using:SourceFolder + "\" + $_.Name
-                    $log = $using:LogPath
-
-                    # Check if the file exists in the backup folder. If it doesn't, copy it from the source folder
-                    if (!(Test-Path -Path $($backup + "\" + $_.Name))){
-                        
-                        $output = "$date " + $_.Name + " missing in $backup, copying from $using:SourceFolder"
-                        # Log to console
-                        Write-Output $output
-                        # Log to file
-                        $output | Out-File -Append -FilePath $log | Wait-Process
-                        Copy-Item -Path $source -Destination $backup 
-                    
-                    # If it does exist, check if the source file has been modified by comparing the last time both files have been modified. If the source
-                    # file is newer, overwrite the backup file with it, otherwise do nothing. That way, only those files which have been modified will be 
-                    # replaced, instead of all files. This should save a lot of time, if the folder contains large files and/or large number of them. 
-                    }elseif (Test-Path -Path $($backup + "\" + $_.Name)) {
-                        if ($_.LastWriteTime -gt (Get-ChildItem -Path $($backup + "\" + $_.Name)).LastWriteTime){
-                            
-                            $output = "$date " + $_.Name + " already present in $backup, overwriting..." 
-                            # Log to console
-                            Write-Output $output 
-                            # Log to file
-                            $output | Out-File -Append -FilePath $log | Wait-Process
-                            Copy-Item -Path $source -Destination $backup 
-                        }
-                    } 
-                }
-
-                Start-Sleep $Interval
                 
-                if($Verify){
-                    
-                    $source_list = Get-ChildItem -Path $SourceFolder
-                    $result = $source_list | ForEach-Object -Parallel {
+                $source_list = Get-ChildItem -Path $SourceFolder
+                # Loop through the list
+                foreach($item in $source_list) {
+  
+                    $backup = $BackupFolder + "\" + $item.Name
+                    $source = $SourceFolder + "\" + $item.Name
+                                    
+                    # Check if the file exists in the backup folder. If it doesn't, copy it from the source folder. Create custom object,
+                    # containing time stamp, the file name, the operation performed on it, the source folder path and the backup folder path.
+                    # The object then is added to the $LogObjects array, which can be exported to JSON file with the -OutJSON switch and
+                    # later used further down the pipeline if needed. This should provide much more convenient use of the data generated,
+                    # unlike the regular log.
+                    if (!(Test-Path -Path $backup)){
                         
-                        $LogPath = $using:LogFolder + "\" + "activities.log"
-                        $TestPath = $($using:BackupFolder + "\" + $_.Name)
-
-                        if ((Test-Path -Path $_.FullName) -and (Test-Path -Path $TestPath)){
-                            if (((Get-ChildItem -Path $_).LastWriteTime) -eq ((Get-ChildItem -Path $TestPath).LastWriteTime)){
-                                continue
-                                Write-Output $TestPath
-                            }else{
-                                $output = "$_ present, but last write time doesn't match"
-                                Write-Output $output 
-                                $output | Out-File -Append -FilePath $LogPath | Wait-Process
-                            }
-                                continue
-                            }else{
-                            $output = "$_ not found in the backup folder"
+                        $date = Get-Date
+                        Copy-Item -Path $source -Destination $backup                         
+                        $OutObject = Log-Object -File $item.Name -Operation "Copy" -FromFolder $source -ToFolder $BackupFolder
+                        $LogObjects += $OutObject
+                        $output = "$date " + $item.Name + " missing in $BackupFolder, copying from $SourceFolder"
+                        Write-Output $output
+                        $output | Out-File -Append -FilePath $LogPath | Wait-Process
+                    
+                        # If the file exist in the backup folder already, check the last write time and if there is any difference,
+                        # copy and replace it 
+                    }elseif (Test-Path -Path $backup) {
+                        if ($item.LastWriteTime -gt (Get-ChildItem -Path $backup).LastWriteTime){
+                            
+                            $date = Get-Date
+                            Copy-Item -Path $source -Destination $backup                             
+                            $OutObject = Log-Object -File $item.Name -Operation "Replace" -FromFolder $source -ToFolder $BackupFolder
+                            $LogObjects += $OutObject
+                            $output = "$date " + $item.Name + " found in $BackupFolder, replacing with the latest version from $SourceFolder"
                             Write-Output $output
                             $output | Out-File -Append -FilePath $LogPath | Wait-Process
                         }
                     }
-
-                    
-                    if ($result){                        
-                        $result | Out-File -Append -FilePath $LogPath | Wait-Process
-
-                    }else{
-                        $date = Get-Date
-                        $output = "`nBackup content successfully verified at " + "$date`n"
-                        Write-Host $output -ForegroundColor Green
-                        $output | Out-File -Append -FilePath $LogPath | Wait-Process
-                        
+                }
+                $index++
+                Start-Sleep $Interval
+                
+                if ($Verify){
+                    if($index -gt 0){
+                        Verify-Content -SourceFolder $SourceFolder -BackupFolder $BackupFolder -LogFolder $LogFolder
                     }
-
-                    foreach ($item in (Get-ChildItem -Path $BackupFolder).Name){
-                        if (!($source_list.Name.Contains($item))){
-                            Write-Warning "$item not found in source folder!"
-                        }
-                    }                    
                 }
 
-                $output = "`n###--------------------------------------------------------------------------------------------------------###" +
-                "`n###   $date" +  " ###  Log ended  ###`n" 
+                # Create JSON file if the log will be used down the line
+                if($OutJSON){
+                    if ($LogObjects){
+                        $Path = $LogFolder + "\objects.json"
+                        $LogObjects | ConvertTo-Json | Out-File -FilePath $Path
+                        Write-Host "Objects array exported to JSON" -ForegroundColor Green
+                    }else {
+                        Write-Warning "No objects were created"
+                    }
+                }
 
+                $output = "`n###  Synchronization ended at " + "$(Get-Date) ###`n" 
                 Write-Output $output 
                 $output | Out-File -Append -FilePath $LogPath
- 
+                
             }until ($(Get-Date -Format "HH:mm") -ge $EndTime)
         }
     }
