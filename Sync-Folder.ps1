@@ -83,10 +83,6 @@ function Sync-Folder {
     and folder paths.
      
 .NOTES
-        For itteration over the files in the source folder, the function uses parallel processing with "ForEach-Object -Parallel", since this is a
-    simple way to speed up this process. For a folder containing large number of files, multiprocessing solution with PowerShell jobs might be 
-    more suitable. "ForEach-Object -Parallel" executes in a different runspace than the current one, therefore "using" is used to import the 
-    variables. 
         The functions assumes that the back folder has already been created and does not check if it contains files that are not found
     in the source folder.
         Wait-Process ensures that only one process at a time has been recorded in the log and  
